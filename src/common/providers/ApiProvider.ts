@@ -1,5 +1,5 @@
-import { createContext, useContext, useEffect, useState } from 'react';
-import { Actions } from '../types/backgroundActions';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { Actions, TokenDetails } from '../types/backgroundActions';
 
 export interface IApiProvider {
   get(url: string): Promise<any>;
@@ -18,9 +18,49 @@ interface IApiDetails {
   isReady: boolean;
 }
 
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+  }
+}
+
 export const ApiProviderContext = createContext<IApiProvider>({} as any);
 export const ApiProviderContextRoot = (): IApiProvider => {
   const [apiDetails, setApiDetails] = useState<IApiDetails>({ isReady: false });
+  // Requests read the token from this ref rather than from render state, so a
+  // callback captured before a token refresh still sends the current token.
+  const apiDetailsRef = useRef(apiDetails);
+
+  const applyTokenDetails = (details: Partial<TokenDetails>) => {
+    const prev = apiDetailsRef.current;
+    const next: IApiDetails = {
+      apiUrl: details.apiUrl || prev.apiUrl,
+      apiToken: details.token || prev.apiToken,
+      legacyApiUrl: details.legacyApiUrl || prev.legacyApiUrl,
+      legacyToken: details.legacyToken || prev.legacyToken,
+      isReady: Boolean(details.apiUrl && details.token) || prev.isReady,
+    };
+    apiDetailsRef.current = next;
+    setApiDetails(next);
+  };
+
+  // Pull the newest token the background has seen before each request.
+  // Pushed updates can be missed while the background worker is asleep.
+  const refreshToken = async () => {
+    const details = await new Promise<TokenDetails | undefined>((resolve) => {
+      chrome.runtime.sendMessage(
+        { type: 'get-token' } as Actions,
+        (response: TokenDetails | undefined) => {
+          // Reading lastError marks it handled; the last token is used instead.
+          void chrome.runtime.lastError;
+          resolve(response);
+        }
+      );
+    });
+    if (details) {
+      applyTokenDetails(details);
+    }
+  };
 
   const makeRequest = async (
     baseUrl: string,
@@ -46,20 +86,33 @@ export const ApiProviderContextRoot = (): IApiProvider => {
       }
     );
 
-    const body = await response.json();
+    const text = await response.text();
+    let body: any = undefined;
+    try {
+      body = text ? JSON.parse(text) : undefined;
+    } catch {
+      // Non-JSON body (e.g. an HTML error page); reported via the status below.
+    }
 
     if (response.ok) {
       return body;
     }
-    throw new Error(body.error?.message);
+    throw new ApiError(
+      body?.error?.message || `HTTP ${response.status} ${response.statusText}`,
+      response.status
+    );
   };
 
   const http = async (url: string, method: string, data?: any) => {
-    return makeRequest(apiDetails.apiUrl!, apiDetails.apiToken!, '1', url, method, data);
+    await refreshToken();
+    const { apiUrl, apiToken } = apiDetailsRef.current;
+    return makeRequest(apiUrl!, apiToken!, '1', url, method, data);
   };
 
   const legacyHttp = async (url: string, method: string, data?: any) => {
-    return makeRequest(apiDetails.legacyApiUrl!, apiDetails.legacyToken!, '2016-11-01', url, method, data);
+    await refreshToken();
+    const { legacyApiUrl, legacyToken } = apiDetailsRef.current;
+    return makeRequest(legacyApiUrl!, legacyToken!, '2016-11-01', url, method, data);
   };
 
   useEffect(() => {
@@ -68,13 +121,7 @@ export const ApiProviderContextRoot = (): IApiProvider => {
         default:
           break;
         case 'token-changed':
-          setApiDetails((prev) => ({
-            apiUrl: action.apiUrl || prev.apiUrl,
-            apiToken: action.token || prev.apiToken,
-            legacyApiUrl: action.legacyApiUrl || prev.legacyApiUrl,
-            legacyToken: action.legacyToken || prev.legacyToken,
-            isReady: Boolean(action.apiUrl && action.token),
-          }));
+          applyTokenDetails(action);
           break;
       }
       sendResponse();

@@ -41,7 +41,11 @@ scripts/pack-extension.ps1         # PowerShell script to pack .crx
 
 1. **Background service worker** (`background.ts`) intercepts web requests to `*.api.flow.microsoft.com/*`, extracts Bearer tokens from the Authorization header, and manages extension state (auth token, API URL, tab IDs). It opens the editor in a new tab when the extension icon is clicked.
 
-2. **React SPA** (`app.tsx`) runs in a separate tab with Monaco Editor. It receives auth tokens from the background worker via `chrome.runtime.onMessage` and stores them in `ApiProviderContext`. Flow/environment IDs are passed via URL query parameters.
+   Its state is mirrored into `chrome.storage.session` so it survives the service worker being stopped while idle.
+
+2. **React SPA** (`app.tsx`) runs in a separate tab with Monaco Editor. It receives auth tokens from the background worker via `chrome.runtime.onMessage`, and also pulls the latest one (`get-token`) before every request, keeping it in a ref inside `ApiProviderContext`. Flow/environment IDs are passed via URL query parameters.
+
+   Saving re-reads the flow and asks before overwriting changes made elsewhere, backs up the server version to `chrome.storage.local` (`flowBackups.ts`, last 10 per flow), then asks the background to reload the designer tab.
 
 3. **API calls** go through `ApiProvider.ts`, which appends `?api-version=2016-11-01` and the auth header to all requests.
 

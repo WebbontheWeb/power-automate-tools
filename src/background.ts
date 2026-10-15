@@ -1,4 +1,4 @@
-import { Actions } from "./common/types/backgroundActions";
+import { Actions, TokenDetails } from "./common/types/backgroundActions";
 
 interface TabState {
   apiUrl?: string;
@@ -16,6 +16,31 @@ interface State {
 
 const state: State = { tabs: {} };
 
+// Chrome stops an idle service worker after ~30 seconds, which wipes module
+// variables. The state is mirrored into chrome.storage.session (in memory,
+// never written to disk, only readable by extension pages) and restored when
+// the worker starts again. @types/chrome 0.0.180 predates storage.session.
+const STATE_KEY = "state";
+const sessionStorage = (
+  chrome.storage as unknown as { session: chrome.storage.StorageArea }
+).session;
+
+const ready: Promise<void> = sessionStorage
+  .get(STATE_KEY)
+  .then((items) => {
+    const saved: State | undefined = items[STATE_KEY];
+    if (saved) {
+      Object.assign(state, saved);
+    }
+  })
+  .catch((error) => console.error("Failed to restore state", error));
+
+function persistState() {
+  sessionStorage
+    .set({ [STATE_KEY]: state })
+    .catch((error) => console.error("Failed to persist state", error));
+}
+
 function getTabState(tabId: number): TabState {
   if (!state.tabs[tabId]) {
     state.tabs[tabId] = {};
@@ -32,7 +57,8 @@ function getActiveTabState(): TabState | undefined {
 
 chrome.action.disable();
 
-chrome.action.onClicked.addListener((tab) => {
+chrome.action.onClicked.addListener(async (tab) => {
+  await ready;
   if (!tab.id) {
     return;
   }
@@ -43,6 +69,7 @@ chrome.action.onClicked.addListener((tab) => {
   }
 
   state.initiatorTabId = tab.id;
+  persistState();
 
   chrome.tabs.create(
     {
@@ -52,19 +79,24 @@ chrome.action.onClicked.addListener((tab) => {
     },
     (appTab) => {
       state.appTabId = appTab.id;
+      persistState();
     }
   );
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => {
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  await ready;
   if (state.appTabId === tabId) {
     delete state.appTabId;
   }
   delete state.tabs[tabId];
+  persistState();
 });
 
 chrome.webRequest.onBeforeSendHeaders.addListener(
-  listenFlowApiRequests,
+  (details) => {
+    listenFlowApiRequests(details);
+  },
   {
     urls: [
       "https://*.api.flow.microsoft.com/*",
@@ -76,32 +108,52 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
 
 chrome.runtime.onMessage.addListener(
   (action: Actions, sender, sendResponse) => {
-    sendResponse();
-    if (sender.tab?.id === state.appTabId) {
+    ready.then(() => {
+      if (sender.tab?.id !== state.appTabId) {
+        sendResponse();
+        return;
+      }
       switch (action.type) {
         case "app-loaded":
           sendTokenChanged();
+          sendResponse();
+          break;
+        case "get-token":
+          sendResponse(getTokenDetails());
           break;
         case "refresh":
           refreshInitiator();
+          sendResponse();
+          break;
+        default:
+          sendResponse();
           break;
       }
-    }
+    });
+    // Keep the channel open: the response is sent after state is restored.
+    return true;
   }
 );
 
-function sendTokenChanged() {
+function getTokenDetails(): TokenDetails | undefined {
   const tabState = getActiveTabState();
   if (!tabState?.apiToken || !tabState?.apiUrl) {
-    return;
+    return undefined;
   }
-  sendMessageToTab({
-    type: "token-changed",
+  return {
     token: tabState.apiToken,
     apiUrl: tabState.apiUrl,
     legacyApiUrl: tabState.legacyApiUrl,
     legacyToken: tabState.legacyApiToken,
-  });
+  };
+}
+
+function sendTokenChanged() {
+  const details = getTokenDetails();
+  if (!details) {
+    return;
+  }
+  sendMessageToTab({ type: "token-changed", ...details });
 }
 
 function refreshInitiator() {
@@ -110,9 +162,10 @@ function refreshInitiator() {
   }
 }
 
-function listenFlowApiRequests(
+async function listenFlowApiRequests(
   details: chrome.webRequest.WebRequestHeadersDetails
 ) {
+  await ready;
   if (state.appTabId === details.tabId || details.tabId < 0) {
     return;
   }
@@ -152,6 +205,8 @@ function listenFlowApiRequests(
     }
   }
 
+  persistState();
+
   // Notify the editor tab if this is the initiator tab
   if (details.tabId === state.initiatorTabId) {
     sendTokenChanged();
@@ -174,6 +229,7 @@ function tryExtractFlowDataFromTabUrl(tabId: number) {
     if (tabData) {
       const tabState = getTabState(tabId);
       tabState.lastMatchedRequest = tabData;
+      persistState();
       chrome.action.enable(tabId);
     }
   });
@@ -186,6 +242,7 @@ function tryResolveEnvIdFromTab(tabId: number) {
 
     if (envId && tabState?.lastMatchedRequest) {
       tabState.lastMatchedRequest.envId = envId;
+      persistState();
       chrome.action.enable(tabId);
     }
   });

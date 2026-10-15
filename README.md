@@ -27,6 +27,14 @@ The reason behind creating this extension is constantly struggling with repetiti
 
 ## Change Log
 
+### Unreleased
+- Save and Validate always use the latest auth token (they kept the token from when the flow was opened)
+- Background state survives the service worker being stopped while idle (`chrome.storage.session`)
+- Before saving, the flow is re-read; if it changed since it was opened, you're asked before overwriting
+- The server version is backed up before each save (last 10 per flow); restore from the new Backups panel
+- The designer tab is reloaded after a save so it can't save an older copy over the change
+- Clearer errors: invalid JSON, expired token (HTTP 401) and non-JSON error responses
+
 ### v1.3
 - Migrated to the new Power Platform API (`*.api.powerplatform.com`)
 - Fixed flow detection for solution flows and multiple environments
@@ -43,4 +51,4 @@ The reason behind creating this extension is constantly struggling with repetiti
 Added support for opening a flow from the new Power Automate portal and Power Apps portal.
 ## Known limitations
 
-- The authentication token is not refreshed automatically at this moment. Sometimes might be necessary to refresh the flow page that was used to open the extension.
+- The extension can only use tokens the Power Automate page has requested. If the token expires while the designer tab sits idle, reload that tab and save again; your edits in the editor are kept.
