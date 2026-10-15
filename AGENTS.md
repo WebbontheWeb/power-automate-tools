@@ -45,7 +45,9 @@ scripts/pack-extension.ps1         # PowerShell script to pack .crx
 
 2. **React SPA** (`app.tsx`) runs in a separate tab with Monaco Editor. It receives auth tokens from the background worker via `chrome.runtime.onMessage`, and also pulls the latest one (`get-token`) before every request, keeping it in a ref inside `ApiProviderContext`. Flow/environment IDs are passed via URL query parameters.
 
-   Saving re-reads the flow and asks before overwriting changes made elsewhere, backs up the server version to `chrome.storage.local` (`flowBackups.ts`, last 10 per flow), then asks the background to reload the designer tab.
+   The editor page's message listener only answers the background worker (never other editor tabs), and the background only answers the editor tab it opened.
+
+   Saving re-reads the flow and asks before overwriting changes made elsewhere, and backs up the server version to `chrome.storage.local` (`flowBackups.ts`: compact JSON, 14-day retention, last 10 per flow, ~4 MB total cap, can be turned off). After a save the user can ask the background to reload the designer tab (`refresh`), which it does only if that tab still shows the flow.
 
 3. **API calls** go through `ApiProvider.ts`, which appends `?api-version=2016-11-01` and the auth header to all requests.
 

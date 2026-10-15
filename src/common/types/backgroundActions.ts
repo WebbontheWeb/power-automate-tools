@@ -1,5 +1,7 @@
+/** Reloads the designer tab if it still shows this flow; responds with whether it did. */
 export interface RefreshInitiator {
   type: 'refresh';
+  flowId: string;
 }
 
 export interface AppLoaded {

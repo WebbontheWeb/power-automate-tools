@@ -30,10 +30,11 @@ The reason behind creating this extension is constantly struggling with repetiti
 ### Unreleased
 - Save and Validate always use the latest auth token (they kept the token from when the flow was opened)
 - Background state survives the service worker being stopped while idle (`chrome.storage.session`)
-- Before saving, the flow is re-read; if it changed since it was opened, you're asked before overwriting
-- The server version is backed up before each save (last 10 per flow); restore from the new Backups panel
-- The designer tab is reloaded after a save so it can't save an older copy over the change
+- Before saving, the flow is re-read; if it changed since it was opened, you're asked before overwriting. A rename made elsewhere is kept.
+- The server version is backed up before each save; restore from the new Backups panel. Backups are kept 14 days (last 10 per flow, about 4 MB in total), can be deleted or turned off, and the panel warns that they include any secrets typed into actions.
+- After a save, a "Reload designer" button reloads the designer tab (only if it still shows that flow) so it can't save an older copy over the change
 - Clearer errors: invalid JSON, expired token (HTTP 401) and non-JSON error responses
+- Hardening: only the extension's editor tab can request tokens, flow and environment IDs are validated before use, and Monaco no longer fetches `$schema` URLs pasted into the editor
 
 ### v1.3
 - Migrated to the new Power Platform API (`*.api.powerplatform.com`)

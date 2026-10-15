@@ -71,11 +71,13 @@ chrome.action.onClicked.addListener(async (tab) => {
   state.initiatorTabId = tab.id;
   persistState();
 
+  const params = new URLSearchParams({
+    envId: tabState.lastMatchedRequest.envId,
+    flowId: tabState.lastMatchedRequest.flowId,
+  });
   chrome.tabs.create(
     {
-      url: `${chrome.runtime.getURL("app.html")}?envId=${
-        tabState.lastMatchedRequest.envId
-      }&flowId=${tabState.lastMatchedRequest.flowId}`,
+      url: `${chrome.runtime.getURL("app.html")}?${params}`,
     },
     (appTab) => {
       state.appTabId = appTab.id;
@@ -108,8 +110,8 @@ chrome.webRequest.onBeforeSendHeaders.addListener(
 
 chrome.runtime.onMessage.addListener(
   (action: Actions, sender, sendResponse) => {
-    ready.then(() => {
-      if (sender.tab?.id !== state.appTabId) {
+    ready.then(async () => {
+      if (!isEditorTab(sender)) {
         sendResponse();
         return;
       }
@@ -122,8 +124,7 @@ chrome.runtime.onMessage.addListener(
           sendResponse(getTokenDetails());
           break;
         case "refresh":
-          refreshInitiator();
-          sendResponse();
+          sendResponse(await reloadInitiatorIfShowing(action.flowId));
           break;
         default:
           sendResponse();
@@ -134,6 +135,16 @@ chrome.runtime.onMessage.addListener(
     return true;
   }
 );
+
+/** Only the editor tab this worker opened may ask for tokens. */
+function isEditorTab(sender: chrome.runtime.MessageSender) {
+  return (
+    state.appTabId !== undefined &&
+    sender.tab?.id === state.appTabId &&
+    sender.id === chrome.runtime.id &&
+    !!sender.url?.startsWith(chrome.runtime.getURL("app.html"))
+  );
+}
 
 function getTokenDetails(): TokenDetails | undefined {
   const tabState = getActiveTabState();
@@ -156,9 +167,25 @@ function sendTokenChanged() {
   sendMessageToTab({ type: "token-changed", ...details });
 }
 
-function refreshInitiator() {
-  if (state.initiatorTabId) {
-    chrome.tabs.reload(state.initiatorTabId);
+/**
+ * Reloads the tab the editor was opened from, but only while it still shows
+ * the saved flow; it may have been navigated elsewhere or closed since.
+ */
+async function reloadInitiatorIfShowing(flowId: string): Promise<boolean> {
+  const tabId = state.initiatorTabId;
+  if (tabId === undefined) {
+    return false;
+  }
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    // Matches .../flows/{id} and the Power Apps portal's .../cloudflows/{id}.
+    if (!tab.url?.toLowerCase().includes(`flows/${flowId.toLowerCase()}`)) {
+      return false;
+    }
+    await chrome.tabs.reload(tabId);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -299,7 +326,7 @@ function extractFlowDataFromUrl(
 
   // Old format: .../providers/Microsoft.ProcessSimple/environments/{envId}/flows/{flowId}
   const oldPattern =
-    /\/providers\/Microsoft\.ProcessSimple\/environments\/([^/]+)\/flows\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+    /\/providers\/Microsoft\.ProcessSimple\/environments\/([a-zA-Z0-9\-]+)\/flows\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
   const oldResult = oldPattern.exec(requestUrl);
   if (oldResult) {

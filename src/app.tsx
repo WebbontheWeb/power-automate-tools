@@ -57,7 +57,8 @@ function App() {
 
 function initMonaco() {
   monaco.languages.json.jsonDefaults.setDiagnosticsOptions({
-    enableSchemaRequest: true,
+    // Both schemas are bundled; don't fetch a $schema URL pasted into the editor.
+    enableSchemaRequest: false,
     schemas: [
       {
         uri: 'https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json',

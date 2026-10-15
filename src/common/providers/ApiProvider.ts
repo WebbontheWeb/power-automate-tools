@@ -116,15 +116,22 @@ export const ApiProviderContextRoot = (): IApiProvider => {
   };
 
   useEffect(() => {
-    const cb = (action: Actions, sender: any, sendResponse: () => void) => {
-      switch (action.type) {
-        default:
-          break;
-        case 'token-changed':
-          applyTokenDetails(action);
-          break;
+    const cb = (
+      action: Actions,
+      sender: chrome.runtime.MessageSender,
+      sendResponse: () => void
+    ) => {
+      // Only the background worker talks to this page (via tabs.sendMessage,
+      // so sender.tab is unset). Messages from other editor tabs, such as
+      // their get-token requests, must go unanswered here: replying would
+      // beat the background's reply and hand them an empty token.
+      if (sender.id !== chrome.runtime.id || sender.tab) {
+        return;
       }
-      sendResponse();
+      if (action.type === 'token-changed') {
+        applyTokenDetails(action);
+        sendResponse();
+      }
     };
 
     chrome.runtime.onMessage.addListener(cb);

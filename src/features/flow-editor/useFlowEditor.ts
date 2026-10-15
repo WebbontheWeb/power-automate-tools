@@ -1,15 +1,28 @@
+import { MessageBarButton } from "@fluentui/react/lib/Button";
 import { MessageBarType } from "@fluentui/react/lib/MessageBar";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createElement, useEffect, useMemo, useRef, useState } from "react";
 import { useMessageBar } from "../../common/components/Messages";
 import {
   ApiError,
   useApiProviderContext,
 } from "../../common/providers/ApiProvider";
 import { Actions } from "../../common/types/backgroundActions";
-import { addFlowBackup, FlowBackup, getFlowBackups } from "./flowBackups";
+import {
+  addFlowBackup,
+  deleteAllBackups,
+  deleteFlowBackups,
+  FlowBackup,
+  getBackupsEnabled,
+  getFlowBackups,
+  setBackupsEnabled,
+} from "./flowBackups";
 import { FlowError } from "./types";
 
 const editorSchema = "https://power-automate-tools.local/flow-editor.json#";
+
+const envIdPattern = /^[A-Za-z0-9-]+$/;
+const flowIdPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const useFlowEditor = () => {
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -24,64 +37,91 @@ export const useFlowEditor = () => {
   const api = useApiProviderContext();
   const query = new URLSearchParams(location.search);
 
-  const envId = query.get("envId");
-  const flowId = query.get("flowId");
+  const envId = validId(query.get("envId"), envIdPattern);
+  const flowId = validId(query.get("flowId"), flowIdPattern);
 
   const messageBar = useMessageBar();
 
   const addMessage = useMemo(
-    () => (msg: string | string[], type?: MessageBarType) => {
-      messageBar.setMessages([
-        {
-          key: "1",
-          messageBarType: type || MessageBarType.success,
-          isMultiline: typeof msg !== "string",
-          children: msg,
-        },
-      ]);
-    },
+    () =>
+      (
+        msg: string | string[],
+        type?: MessageBarType,
+        actions?: JSX.Element
+      ) => {
+        messageBar.setMessages([
+          {
+            key: "1",
+            messageBarType: type || MessageBarType.success,
+            isMultiline: typeof msg !== "string",
+            children: msg,
+            actions,
+          },
+        ]);
+      },
     [messageBar]
   );
 
   const [data, setData] = useState<{
     name: string;
     definition: string;
-    environment: any;
   }>({
     name: "",
     definition: "",
-    environment: null,
   });
 
   // The flow as it was on the server when it was loaded or last saved. Used
   // to detect changes made elsewhere (designer, other users) before saving.
+  // Null when the flow couldn't be loaded.
   const baselineRef = useRef<string | null>(null);
 
   const [backups, setBackups] = useState<FlowBackup[]>([]);
+  const [backupsEnabled, setBackupsEnabledState] = useState<boolean>(true);
+
+  useEffect(() => {
+    getBackupsEnabled().then(setBackupsEnabledState);
+  }, []);
 
   useEffect(() => {
     (async () => {
-      if (envId && flowId) {
-        try {
-          setIsLoading(true);
-          const flow = await api.get(getFlowUrl(flowId));
-          baselineRef.current = toEditorJson(flow);
-          setData({
-            name: flow.properties.displayName,
-            environment: flow.properties.environment,
-            definition: baselineRef.current,
-          });
-        } catch (error) {
-          addMessage(
-            "Error during fetching the flow definition: " + describeError(error),
-            MessageBarType.error
-          );
-        } finally {
-          setIsLoading(false);
-        }
+      if (!envId || !flowId) {
+        addMessage(
+          "The flow or environment ID in the address is missing or invalid. Open the editor from the flow's page.",
+          MessageBarType.error
+        );
+        return;
+      }
+      try {
+        setIsLoading(true);
+        const flow = await api.get(getFlowUrl(flowId));
+        baselineRef.current = toEditorJson(flow);
+        setData({
+          name: flow.properties.displayName,
+          definition: baselineRef.current,
+        });
+      } catch (error) {
+        addMessage(
+          "Error during fetching the flow definition: " + describeError(error),
+          MessageBarType.error
+        );
+      } finally {
+        setIsLoading(false);
       }
     })();
   }, [envId, flowId]);
+
+  const reloadDesigner = async () => {
+    const reloaded = await sendMessage<boolean>({
+      type: "refresh",
+      flowId: flowId!,
+    });
+    addMessage(
+      reloaded
+        ? "The designer tab was reloaded with the saved version."
+        : "The designer tab wasn't reloaded: it's closed or showing a different page.",
+      reloaded ? MessageBarType.success : MessageBarType.warning
+    );
+  };
 
   return {
     isLoading,
@@ -90,17 +130,35 @@ export const useFlowEditor = () => {
     validationResult,
     ...messageBar,
     ...data,
+    /** Shows text in the editor when it isn't mounted (the flow didn't load). */
+    setDefinitionText: (definition: string) =>
+      setData((prev) => ({ ...prev, definition })),
     backups,
+    backupsEnabled,
     loadBackups: async () => {
       if (flowId) {
         setBackups(await getFlowBackups(flowId));
       }
     },
-    saveDefinition: async (
-      name: string,
-      environment: any,
-      definition: string
-    ) => {
+    changeBackupsEnabled: async (enabled: boolean) => {
+      setBackupsEnabledState(enabled);
+      await setBackupsEnabled(enabled);
+    },
+    deleteFlowBackups: async () => {
+      if (flowId) {
+        await deleteFlowBackups(flowId);
+        setBackups([]);
+      }
+    },
+    deleteAllBackups: async () => {
+      await deleteAllBackups();
+      setBackups([]);
+    },
+    saveDefinition: async (definition: string) => {
+      if (!flowId) {
+        return null;
+      }
+
       let retVal: string | null = null;
       let data: any;
       try {
@@ -129,14 +187,28 @@ export const useFlowEditor = () => {
       try {
         setIsLoading(true);
 
-        const current = toEditorJson(await api.get(getFlowUrl(flowId)));
+        const currentFlow = await api.get(getFlowUrl(flowId));
+        const current = toEditorJson(currentFlow);
 
-        if (
+        if (baselineRef.current === null) {
+          if (
+            !confirm(
+              "The editor never loaded this flow's current version, so saving will replace whatever is on the server.\n\n" +
+                "Save anyway?"
+            )
+          ) {
+            addMessage("Nothing was saved.", MessageBarType.warning);
+            return null;
+          }
+        } else if (
           current !== baselineRef.current &&
           !confirm(
             "This flow has been changed since you opened it here, in the designer or by someone else.\n\n" +
-              "Saving will overwrite those changes. The current version will be kept as a backup.\n\n" +
-              "Overwrite it?"
+              "Saving will overwrite those changes" +
+              (backupsEnabled
+                ? ". The current version will be kept as a backup."
+                : ", and backups are turned off.") +
+              "\n\nOverwrite it?"
           )
         ) {
           addMessage(
@@ -146,48 +218,68 @@ export const useFlowEditor = () => {
           return null;
         }
 
-        try {
-          await addFlowBackup(flowId!, {
-            savedAt: new Date().toISOString(),
-            name: name,
-            content: current,
-          });
-        } catch (error) {
-          if (
-            !confirm(
-              "A backup of the current version couldn't be stored (" +
-                describeError(error) +
-                ").\n\nSave without a backup?"
-            )
-          ) {
-            addMessage("Nothing was saved.", MessageBarType.warning);
-            return null;
+        let backedUp = false;
+        if (backupsEnabled) {
+          try {
+            await addFlowBackup(flowId, {
+              savedAt: new Date().toISOString(),
+              name: currentFlow.properties.displayName,
+              content: current,
+            });
+            backedUp = true;
+          } catch (error) {
+            if (
+              !confirm(
+                "A backup of the current version couldn't be stored (" +
+                  describeError(error) +
+                  ").\n\nSave without a backup?"
+              )
+            ) {
+              addMessage("Nothing was saved.", MessageBarType.warning);
+              return null;
+            }
           }
         }
 
+        // Name and environment come from the fresh read, so a rename made
+        // elsewhere since the editor opened isn't reverted.
         const response = await api.patch(getFlowUrl(flowId), {
           properties: {
-            displayName: name,
-            environment: environment,
+            displayName: currentFlow.properties.displayName,
+            environment: currentFlow.properties.environment,
             definition: data.definition,
             connectionReferences: data.connectionReferences,
           },
         });
 
         // Re-read so the baseline matches what a later GET returns.
+        let savedFlow = response;
         try {
-          baselineRef.current = toEditorJson(await api.get(getFlowUrl(flowId)));
+          savedFlow = await api.get(getFlowUrl(flowId));
         } catch {
-          baselineRef.current = toEditorJson(response);
+          // Fall back to the PATCH response.
         }
+        baselineRef.current = toEditorJson(savedFlow);
         retVal = baselineRef.current;
+        setData({
+          name: savedFlow.properties.displayName,
+          definition: retVal,
+        });
 
-        // The designer still holds the old version; saving it there would
-        // overwrite this change, so reload it.
-        chrome.runtime.sendMessage({ type: "refresh" } as Actions);
-
+        // The designer still holds the old version, and saving there would
+        // overwrite this change. Reloading it could discard unsaved designer
+        // work, so leave that to the user.
         addMessage(
-          "The flow definition was saved. The previous version is in Backups, and the designer tab was reloaded."
+          "The flow definition was saved" +
+            (backedUp ? " and the previous version is in Backups" : "") +
+            ". Reload the designer tab before editing there, or it may save the old version over this one.",
+          MessageBarType.success,
+          createElement(MessageBarButton, {
+            text: "Reload designer",
+            onClick: () => {
+              reloadDesigner();
+            },
+          })
         );
       } catch (error) {
         addMessage(
@@ -244,6 +336,19 @@ export const useFlowEditor = () => {
   };
 };
 
+function validId(value: string | null, pattern: RegExp) {
+  return value && pattern.test(value) ? value : null;
+}
+
+function sendMessage<T>(action: Actions) {
+  return new Promise<T | undefined>((resolve) => {
+    chrome.runtime.sendMessage(action, (response: T | undefined) => {
+      void chrome.runtime.lastError;
+      resolve(response);
+    });
+  });
+}
+
 function toEditorJson(flow: any) {
   return JSON.stringify(
     {
@@ -264,9 +369,11 @@ function describeError(error: unknown) {
 }
 
 function getFlowUrl(flowId: string | null) {
-  return `powerautomate/flows/${flowId}`;
+  return `powerautomate/flows/${encodeURIComponent(flowId ?? "")}`;
 }
 
 function getLegacyFlowUrl(envId: string | null, flowId: string | null) {
-  return `providers/Microsoft.ProcessSimple/environments/${envId}/flows/${flowId}`;
+  return `providers/Microsoft.ProcessSimple/environments/${encodeURIComponent(
+    envId ?? ""
+  )}/flows/${encodeURIComponent(flowId ?? "")}`;
 }

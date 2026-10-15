@@ -24,13 +24,17 @@ export const FlowEditorPage: React.FC = () => {
   const [backupsPaneIsOpen, setBackupsPaneIsOpen] = useState<boolean>(false);
   const {
     name,
-    environment,
     definition,
+    setDefinitionText,
     isLoading,
     saveDefinition,
     validate,
     backups,
+    backupsEnabled,
     loadBackups,
+    changeBackupsEnabled,
+    deleteFlowBackups,
+    deleteAllBackups,
     messages,
     setMessages,
     onDismissed,
@@ -55,7 +59,7 @@ export const FlowEditorPage: React.FC = () => {
       disabled: !editor,
       onClick: () => {
         (async () => {
-          const savedDefinition = await saveDefinition(name, environment, editor.getValue());
+          const savedDefinition = await saveDefinition(editor.getValue());
 
           if (savedDefinition) {
             editor.setValue(savedDefinition);
@@ -99,10 +103,27 @@ export const FlowEditorPage: React.FC = () => {
       />
       <FlowBackupsPanel
         backups={backups}
+        backupsEnabled={backupsEnabled}
         isOpen={backupsPaneIsOpen}
         onClose={() => setBackupsPaneIsOpen(false)}
+        onBackupsEnabledChange={changeBackupsEnabled}
+        onDeleteFlowBackups={() => {
+          if (confirm("Delete all backups of this flow?")) {
+            deleteFlowBackups();
+          }
+        }}
+        onDeleteAllBackups={() => {
+          if (confirm("Delete the backups of every flow?")) {
+            deleteAllBackups();
+          }
+        }}
         onLoad={(backup) => {
-          editor.setValue(backup.content);
+          if (editor) {
+            editor.setValue(backup.content);
+          } else {
+            // The flow didn't load, so the editor isn't mounted yet.
+            setDefinitionText(backup.content);
+          }
           setBackupsPaneIsOpen(false);
           setMessages([
             {
