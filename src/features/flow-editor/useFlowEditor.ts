@@ -130,6 +130,9 @@ export const useFlowEditor = () => {
     validationResult,
     ...messageBar,
     ...data,
+    flowId,
+    /** The flow as on the server when last loaded or saved. */
+    getBaseline: () => baselineRef.current,
     /** Shows text in the editor when it isn't mounted (the flow didn't load). */
     setDefinitionText: (definition: string) =>
       setData((prev) => ({ ...prev, definition })),

@@ -11,6 +11,7 @@ import { LoaderModal } from '../../common/components/LoaderModal';
 import { Messages } from '../../common/components/Messages';
 import { FlowBackupsPanel } from './FlowBackupsPanel';
 import { FlowValidationResult } from './FlowValidationResult';
+import { useFileSync } from './useFileSync';
 import { useFlowEditor } from './useFlowEditor';
 
 const editorContainerClassName = mergeStyles({
@@ -41,7 +42,16 @@ export const FlowEditorPage: React.FC = () => {
     validationResult,
     validationPaneIsOpen,
     setValidationPaneIsOpen,
+    flowId,
+    getBaseline,
   } = useFlowEditor();
+  const fileSync = useFileSync({
+    flowId,
+    flowName: name,
+    editor,
+    getBaseline,
+    setMessages,
+  });
 
   // Rebuilt on every render: the handlers must not hold on to an older
   // saveDefinition/validate (and with it an older API context).
@@ -58,13 +68,16 @@ export const FlowEditorPage: React.FC = () => {
       },
       disabled: !editor,
       onClick: () => {
-        (async () => {
-          const savedDefinition = await saveDefinition(editor.getValue());
+        // File changes wait until the save (and writing it back) is done.
+        fileSync.whilePaused(async () => {
+          const submitted = editor.getValue();
+          const savedDefinition = await saveDefinition(submitted);
 
           if (savedDefinition) {
             editor.setValue(savedDefinition);
+            await fileSync.writeSaved(savedDefinition, submitted);
           }
-        })();
+        });
       },
     },
     {
@@ -89,7 +102,70 @@ export const FlowEditorPage: React.FC = () => {
         setBackupsPaneIsOpen(true);
       },
     },
+    ...fileCommandBarItems(),
   ];
+
+  function fileCommandBarItems(): ICommandBarItemProps[] {
+    if (!fileSync.fileSyncSupported) {
+      return [];
+    }
+    const { linkedFile } = fileSync;
+    if (!linkedFile) {
+      return [
+        {
+          key: 'linkFile',
+          text: 'Link to file',
+          iconProps: { iconName: 'Link' },
+          disabled: !editor,
+          subMenuProps: {
+            items: [
+              {
+                key: 'newFile',
+                text: 'Save to a new file...',
+                iconProps: { iconName: 'Save' },
+                onClick: () => {
+                  fileSync.linkNewFile();
+                },
+              },
+              {
+                key: 'existingFile',
+                text: 'Link an existing file...',
+                iconProps: { iconName: 'OpenFile' },
+                onClick: () => {
+                  fileSync.linkExistingFile();
+                },
+              },
+            ],
+          },
+        },
+      ];
+    }
+    return [
+      {
+        key: 'linkedFile',
+        text: linkedFile.syncing
+          ? linkedFile.name
+          : `${linkedFile.name} (not syncing)`,
+        title: linkedFile.syncing
+          ? 'Changes to this file load into the editor for review. Save writes the saved version back to it.'
+          : 'Click to reconnect the file.',
+        iconProps: { iconName: linkedFile.syncing ? 'Sync' : 'Warning' },
+        onClick: () => {
+          if (!linkedFile.syncing) {
+            fileSync.reconnect();
+          }
+        },
+      },
+      {
+        key: 'unlinkFile',
+        text: 'Unlink',
+        iconProps: { iconName: 'RemoveLink' },
+        onClick: () => {
+          fileSync.unlink();
+        },
+      },
+    ];
+  }
 
   return (
     <>
